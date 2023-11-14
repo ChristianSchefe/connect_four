@@ -4,18 +4,17 @@ use bevy::{
     prelude::*, render::camera::ScalingMode, sprite::MaterialMesh2dBundle, window::PrimaryWindow,
 };
 use bevy_tweening::{
-    asset_animator_system, lens::ColorMaterialColorLens, AnimationSystem, AssetAnimator,
-    EaseFunction, Tween, TweeningPlugin,
+    asset_animator_system, component_animator_system,
+    lens::{ColorMaterialColorLens, TransformScaleLens},
+    AnimationSystem, Animator, AssetAnimator, EaseFunction, Tween, TweeningPlugin,
 };
 use components::{Board, GameStateMachine};
 
 use crate::components::Player;
 
 const BACKGROUND_COLOR: Color = Color::rgb(0.9, 0.9, 0.9);
-const PLAYER1_COLOR: Color = Color::hsl(340.0, 0.9, 0.5);
-const PLAYER2_COLOR: Color = Color::hsl(190.0, 0.9, 0.5);
-const HOVER1_COLOR: Color = Color::hsl(190.0, 0.5, 0.9);
-const HOVER2_COLOR: Color = Color::hsl(340.0, 0.5, 0.9);
+const PLAYER1_COLOR: Color = Color::hsl(190.0, 0.9, 0.5);
+const PLAYER2_COLOR: Color = Color::hsl(340.0, 0.9, 0.5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
@@ -26,6 +25,13 @@ pub enum GameState {
 
 #[derive(Event)]
 struct EndTurnEvent(pub GameState, pub UVec2);
+
+#[derive(Event, Debug)]
+struct WinEvent {
+    pub winning_player: Player,
+    pub pos: UVec2,
+    pub dir: IVec2,
+}
 
 #[derive(Resource, Default)]
 struct WorldCoords(Vec2);
@@ -39,6 +45,9 @@ struct MainCamera;
 #[derive(Component)]
 struct AnimationTarget(Option<Player>);
 
+#[derive(Component)]
+struct TileMarker;
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
@@ -47,17 +56,28 @@ fn main() {
         .insert_resource(create_board_resource())
         .add_systems(
             Update,
-            asset_animator_system::<ColorMaterial>.in_set(AnimationSystem::AnimationUpdate),
+            (
+                asset_animator_system::<ColorMaterial>.in_set(AnimationSystem::AnimationUpdate),
+                component_animator_system::<Transform>.in_set(AnimationSystem::AnimationUpdate),
+            ),
         )
         .add_systems(Startup, (setup_camera, setup_board))
         .add_systems(Update, bevy::window::close_on_esc)
         .add_systems(
             Update,
-            (do_move, end_turn, calc_world_mouse, update_tile, hover_tile),
+            (
+                do_move,
+                end_turn,
+                calc_world_mouse,
+                update_tile,
+                hover_tile,
+                spawn_win_line,
+            ),
         )
         .insert_resource(GameStateMachine(GameState::PlayerOneTurn))
         .init_resource::<WorldCoords>()
         .add_event::<EndTurnEvent>()
+        .add_event::<WinEvent>()
         .run();
 }
 
@@ -120,6 +140,23 @@ fn setup_board(
                     ..default()
                 },
             ));
+            commands.spawn((
+                GridPosition(pos),
+                SpriteBundle {
+                    transform: Transform {
+                        translation: board.grid_to_world(pos).extend(-2.0),
+                        scale: Vec3::new(0.95, 0.95, 1.0),
+                        ..default()
+                    },
+                    sprite: Sprite {
+                        color: Color::BLACK,
+                        ..default()
+                    },
+                    visibility: Visibility::Hidden,
+                    ..default()
+                },
+                TileMarker,
+            ));
         }
     }
 }
@@ -143,22 +180,16 @@ fn calc_world_mouse(
 
 fn hover_tile(
     mouse_position: Res<WorldCoords>,
-    game_state: Res<GameStateMachine>,
     board: ResMut<Board>,
-    mut tiles: Query<(&GridPosition, &mut Sprite)>,
+    mut tiles: Query<(&GridPosition, &mut Visibility), With<TileMarker>>,
 ) {
     let grid_pos = board.world_to_grid(mouse_position.0);
-    for (pos, mut sprite) in tiles.iter_mut() {
-        let hover_color = if grid_pos.is_some_and(|p| p == pos.0) {
-            match game_state.0 {
-                GameState::PlayerOneTurn => HOVER1_COLOR,
-                GameState::PlayerTwoTurn => HOVER2_COLOR,
-                GameState::GameOver => Color::WHITE,
-            }
+    for (pos, mut visibility) in tiles.iter_mut() {
+        *visibility = if grid_pos.is_some_and(|p| p == pos.0) {
+            Visibility::Visible
         } else {
-            Color::WHITE
+            Visibility::Hidden
         };
-        sprite.color = hover_color;
     }
 }
 
@@ -173,12 +204,12 @@ fn do_move(
         return;
     }
     if input.just_released(MouseButton::Left) {
-        info!(
+        debug!(
             "World coords: {}/{}",
             mouse_position.0.x, mouse_position.0.y
         );
         if let Some(grid_pos) = board.world_to_grid(mouse_position.0) {
-            info!("Grid pos: {}/{}", grid_pos.x, grid_pos.y);
+            debug!("Grid pos: {}/{}", grid_pos.x, grid_pos.y);
             debug!("End Turn Event sent");
 
             let cur_player = match &game_state.0 {
@@ -199,7 +230,7 @@ fn do_move(
     }
 }
 
-fn check_for_win(board: &Board, team: Player, updated_pos: UVec2) -> bool {
+fn check_for_win(board: &Board, team: Player, updated_pos: UVec2) -> Option<WinEvent> {
     let check_dir = |dir: IVec2| {
         let mut has_four = true;
         for i in 0..4 {
@@ -216,19 +247,24 @@ fn check_for_win(board: &Board, team: Player, updated_pos: UVec2) -> bool {
             }
         }
         if has_four {
-            return true;
+            return Some(dir);
         }
-        false
+        None
     };
 
     check_dir(IVec2 { x: 1, y: 0 })
-        || check_dir(IVec2 { x: 1, y: 1 })
-        || check_dir(IVec2 { x: 0, y: 1 })
-        || check_dir(IVec2 { x: -1, y: 1 })
-        || check_dir(IVec2 { x: -1, y: 0 })
-        || check_dir(IVec2 { x: -1, y: -1 })
-        || check_dir(IVec2 { x: 0, y: -1 })
-        || check_dir(IVec2 { x: 1, y: -1 })
+        .or(check_dir(IVec2 { x: 1, y: 1 }))
+        .or(check_dir(IVec2 { x: 0, y: 1 }))
+        .or(check_dir(IVec2 { x: -1, y: 1 }))
+        .or(check_dir(IVec2 { x: -1, y: 0 }))
+        .or(check_dir(IVec2 { x: -1, y: -1 }))
+        .or(check_dir(IVec2 { x: 0, y: -1 }))
+        .or(check_dir(IVec2 { x: 1, y: -1 }))
+        .map(|dir| WinEvent {
+            winning_player: team,
+            pos: updated_pos,
+            dir,
+        })
 }
 
 fn update_tile(
@@ -266,13 +302,13 @@ fn update_tile(
 
         let tween = Tween::new(
             EaseFunction::CubicOut,
-            std::time::Duration::from_secs_f32(1.5),
+            std::time::Duration::from_secs_f32(1.0),
             ColorMaterialColorLens {
                 start: end_color.with_a(0.0),
                 end: end_color,
             },
         );
-        info!("Add animator at {:?}", pos);
+        debug!("Add animator at {:?}", pos);
         commands
             .entity(entity)
             .remove::<AssetAnimator<ColorMaterial>>()
@@ -284,6 +320,7 @@ fn end_turn(
     mut ev_end_turn: EventReader<EndTurnEvent>,
     mut game_state: ResMut<GameStateMachine>,
     board: Res<Board>,
+    mut win_event_writer: EventWriter<WinEvent>,
 ) {
     for ev in ev_end_turn.read() {
         if ev.0 != game_state.0 {
@@ -298,12 +335,12 @@ fn end_turn(
         };
 
         if let Some(p) = cur_player {
-            let win = check_for_win(board.as_ref(), p, ev.1);
-            if win {
+            if let Some(win_event) = check_for_win(board.as_ref(), p, ev.1) {
                 info!("Player {:?} has won", p);
                 game_state.0 = GameState::GameOver;
+                win_event_writer.send(win_event);
             } else {
-                info!("No win");
+                debug!("No win");
             }
         }
 
@@ -317,5 +354,41 @@ fn end_turn(
             "End Turn from {:?} at {}. New State: {:?}",
             ev.0, ev.1, game_state.0
         );
+    }
+}
+
+fn spawn_win_line(mut commands: Commands, mut win_event: EventReader<WinEvent>, board: Res<Board>) {
+    for ev in win_event.read() {
+        info!("Win event! {:?}", ev);
+        let pos = ev.pos.as_vec2() + ev.dir.as_vec2() * 1.5;
+        let tween = Tween::new(
+            EaseFunction::CubicOut,
+            std::time::Duration::from_secs_f32(1.0),
+            TransformScaleLens {
+                start: Vec3::new(ev.dir.as_vec2().length() * 3.0, 0.0, 1.0),
+                end: Vec3::new(ev.dir.as_vec2().length() * 3.0, 0.2, 1.0),
+            },
+        );
+        commands.spawn((
+            Animator::new(tween),
+            SpriteBundle {
+                transform: Transform {
+                    translation: board.vec2_to_world(pos).extend(1.0),
+                    scale: Vec3::new(ev.dir.as_vec2().length() * 3.0, 0.0, 1.0),
+                    rotation: Quat::from_rotation_z(Vec2::angle_between(
+                        Vec2::new(1.0, 0.0),
+                        ev.dir.as_vec2(),
+                    )),
+                },
+                sprite: Sprite {
+                    color: match ev.winning_player {
+                        Player::PlayerOne => PLAYER1_COLOR,
+                        Player::PlayerTwo => PLAYER2_COLOR,
+                    },
+                    ..default()
+                },
+                ..default()
+            },
+        ));
     }
 }

@@ -19,7 +19,11 @@ pub enum Player {
 
 impl Board {
     pub fn grid_to_world(self: &Board, grid_pos: UVec2) -> Vec2 {
-        grid_pos.as_vec2() - (self.size - UVec2::ONE).as_vec2() * 0.5
+        self.vec2_to_world(grid_pos.as_vec2())
+    }
+
+    pub fn vec2_to_world(self: &Board, grid_pos: Vec2) -> Vec2 {
+        grid_pos - (self.size - UVec2::ONE).as_vec2() * 0.5
     }
 
     pub fn world_to_grid(self: &Board, world_pos: Vec2) -> Option<UVec2> {
