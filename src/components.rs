@@ -1,7 +1,5 @@
 use bevy::prelude::*;
 
-use crate::GameState;
-
 #[derive(Resource)]
 pub struct Board {
     pub size: UVec2,
@@ -17,6 +15,38 @@ pub enum Player {
     PlayerTwo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameState {
+    PlayerOneTurn,
+    PlayerTwoTurn,
+    GameOver,
+}
+
+#[derive(Event)]
+pub struct EndTurnEvent(pub GameState, pub UVec2);
+
+#[derive(Event, Debug)]
+pub struct WinEvent {
+    pub winning_player: Player,
+    pub pos: UVec2,
+    pub dir: IVec2,
+}
+
+#[derive(Resource, Default)]
+pub struct WorldCoords(pub Vec2);
+
+#[derive(Component, Debug)]
+pub struct GridPosition(pub UVec2);
+
+#[derive(Component)]
+pub struct MainCamera;
+
+#[derive(Component)]
+pub struct AnimationTarget(pub Option<Player>);
+
+#[derive(Component)]
+pub struct TileMarker;
+
 impl Board {
     pub fn grid_to_world(self: &Board, grid_pos: UVec2) -> Vec2 {
         self.vec2_to_world(grid_pos.as_vec2())
@@ -27,9 +57,7 @@ impl Board {
     }
 
     pub fn world_to_grid(self: &Board, world_pos: Vec2) -> Option<UVec2> {
-        let pos = (world_pos + (self.size - UVec2::ONE).as_vec2() * 0.5)
-            .round()
-            .as_ivec2();
+        let pos = (world_pos + (self.size - UVec2::ONE).as_vec2() * 0.5).round().as_ivec2();
         if self.valid_ivec_pos(pos) {
             Some(pos.as_uvec2())
         } else {

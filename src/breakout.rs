@@ -58,12 +58,7 @@ fn main() {
         // which runs at 64 Hz by default
         .add_systems(
             FixedUpdate,
-            (
-                apply_velocity,
-                move_paddle,
-                check_for_collisions,
-                play_collision_sound,
-            )
+            (apply_velocity, move_paddle, check_for_collisions, play_collision_sound)
                 // `chain`ing systems together runs them in order
                 .chain(),
         )
@@ -127,12 +122,8 @@ impl WallLocation {
         assert!(arena_width > 0.0);
 
         match self {
-            WallLocation::Left | WallLocation::Right => {
-                Vec2::new(WALL_THICKNESS, arena_height + WALL_THICKNESS)
-            }
-            WallLocation::Bottom | WallLocation::Top => {
-                Vec2::new(arena_width + WALL_THICKNESS, WALL_THICKNESS)
-            }
+            WallLocation::Left | WallLocation::Right => Vec2::new(WALL_THICKNESS, arena_height + WALL_THICKNESS),
+            WallLocation::Bottom | WallLocation::Top => Vec2::new(arena_width + WALL_THICKNESS, WALL_THICKNESS),
         }
     }
 }
@@ -153,10 +144,7 @@ impl WallBundle {
                     scale: location.size().extend(1.0),
                     ..default()
                 },
-                sprite: Sprite {
-                    color: WALL_COLOR,
-                    ..default()
-                },
+                sprite: Sprite { color: WALL_COLOR, ..default() },
                 ..default()
             },
             collider: Collider,
@@ -171,12 +159,7 @@ struct Scoreboard {
 }
 
 // Add the game's entities to our world
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    asset_server: Res<AssetServer>,
-) {
+fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>, asset_server: Res<AssetServer>) {
     // Camera
     commands.spawn(Camera2dBundle::default());
 
@@ -194,10 +177,7 @@ fn setup(
                 scale: PADDLE_SIZE,
                 ..default()
             },
-            sprite: Sprite {
-                color: PADDLE_COLOR,
-                ..default()
-            },
+            sprite: Sprite { color: PADDLE_COLOR, ..default() },
             ..default()
         },
         Paddle,
@@ -284,10 +264,7 @@ fn setup(
             // brick
             commands.spawn((
                 SpriteBundle {
-                    sprite: Sprite {
-                        color: BRICK_COLOR,
-                        ..default()
-                    },
+                    sprite: Sprite { color: BRICK_COLOR, ..default() },
                     transform: Transform {
                         translation: brick_position.extend(0.0),
                         scale: Vec3::new(BRICK_SIZE.x, BRICK_SIZE.y, 1.0),
@@ -302,11 +279,7 @@ fn setup(
     }
 }
 
-fn move_paddle(
-    keyboard_input: Res<Input<KeyCode>>,
-    mut query: Query<&mut Transform, With<Paddle>>,
-    time: Res<Time>,
-) {
+fn move_paddle(keyboard_input: Res<Input<KeyCode>>, mut query: Query<&mut Transform, With<Paddle>>, time: Res<Time>) {
     let mut paddle_transform = query.single_mut();
     let mut direction = 0.0;
 
@@ -319,8 +292,7 @@ fn move_paddle(
     }
 
     // Calculate the new horizontal paddle position based on player input
-    let new_paddle_position =
-        paddle_transform.translation.x + direction * PADDLE_SPEED * time.delta_seconds();
+    let new_paddle_position = paddle_transform.translation.x + direction * PADDLE_SPEED * time.delta_seconds();
 
     // Update the paddle position,
     // making sure it doesn't cause the paddle to leave the arena
@@ -354,12 +326,7 @@ fn check_for_collisions(
 
     // check collision with walls
     for (collider_entity, transform, maybe_brick) in &collider_query {
-        let collision = collide(
-            ball_transform.translation,
-            ball_size,
-            transform.translation,
-            transform.scale.truncate(),
-        );
+        let collision = collide(ball_transform.translation, ball_size, transform.translation, transform.scale.truncate());
         if let Some(collision) = collision {
             // Sends a collision event so that other systems can react to the collision
             collision_events.send_default();
@@ -397,11 +364,7 @@ fn check_for_collisions(
     }
 }
 
-fn play_collision_sound(
-    mut commands: Commands,
-    mut collision_events: EventReader<CollisionEvent>,
-    sound: Res<CollisionSound>,
-) {
+fn play_collision_sound(mut commands: Commands, mut collision_events: EventReader<CollisionEvent>, sound: Res<CollisionSound>) {
     // Play a sound once per frame if a collision occurred.
     if !collision_events.is_empty() {
         // This prevents events staying active on the next frame.
