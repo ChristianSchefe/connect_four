@@ -1,12 +1,13 @@
 use bevy::prelude::*;
 use bevy_tweening::Lens;
 
-use crate::DIRECTIONS;
+use crate::WIN_DIRECTIONS;
 
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub struct Board {
     pub size: UVec2,
     pub grid: Vec<Option<Player>>,
+    pub levels: Vec<u32>,
 }
 
 #[derive(Resource)]
@@ -16,6 +17,15 @@ pub struct GameStateMachine(pub GameState);
 pub enum Player {
     PlayerOne,
     PlayerTwo,
+}
+
+impl Player {
+    pub fn opposite(self) -> Self {
+        match self {
+            Player::PlayerOne => Player::PlayerTwo,
+            Player::PlayerTwo => Player::PlayerOne,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,11 +38,14 @@ pub enum GameState {
 #[derive(Event)]
 pub struct EndTurnEvent(pub GameState, pub UVec2);
 
+#[derive(Event)]
+pub struct RequestMoveEvent(pub Player);
+
 #[derive(Event, Debug)]
 pub struct WinEvent {
     pub winning_player: Player,
-    pub pos: UVec2,
-    pub dir: IVec2,
+    pub from_pos: UVec2,
+    pub to_pos: UVec2,
 }
 
 #[derive(Resource, Default)]
@@ -55,6 +68,12 @@ pub struct BackgroundColorLens {
     pub end: Color,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Move {
+    pub pos: UVec2,
+    pub player: Player,
+}
+
 impl Lens<BackgroundColor> for BackgroundColorLens {
     fn lerp(&mut self, target: &mut BackgroundColor, ratio: f32) {
         let start = Vec4::from(self.start);
@@ -64,6 +83,14 @@ impl Lens<BackgroundColor> for BackgroundColorLens {
 }
 
 impl Board {
+    pub fn new() -> Self {
+        let size = UVec2::new(7, 6);
+        Board {
+            size,
+            grid: vec![None; (size.x * size.y) as usize],
+            levels: vec![0; size.x as usize],
+        }
+    }
     pub fn get_offset(&self) -> Vec2 {
         (self.size - UVec2::ONE).as_vec2() * 0.5 + Vec2::new(0.0, 0.0)
     }
@@ -93,7 +120,7 @@ impl Board {
         pos.x < self.size.x && pos.y < self.size.y
     }
 
-    pub fn set(&mut self, grid_pos: UVec2, value: Option<Player>) {
+    fn set(&mut self, grid_pos: UVec2, value: Option<Player>) {
         let index = (grid_pos.x + grid_pos.y * self.size.x) as usize;
         self.grid[index] = value;
 
@@ -112,23 +139,55 @@ impl Board {
         }
     }
 
-    pub fn check_for_win(&self, team: Player, updated_pos: UVec2) -> Option<IVec2> {
+    pub fn check_for_win(&self, team: Player, updated_pos: UVec2) -> Option<(UVec2, UVec2)> {
         let check_dir = |dir: IVec2| {
-            let mut has_four = true;
-            for i in 0..4 {
+            let mut fwd_count = 0;
+            let mut bwd_count = 0;
+            for i in 1..4 {
                 let pos = updated_pos.as_ivec2() + dir * i;
 
                 if !self.valid_ivec_pos(pos) || !self.get(pos.as_uvec2()).is_some_and(|p| p == team) {
-                    has_four = false;
                     break;
                 }
+                fwd_count += 1
             }
-            if has_four {
-                return true;
+            for i in 1..4 {
+                let pos = updated_pos.as_ivec2() - dir * i;
+
+                if !self.valid_ivec_pos(pos) || !self.get(pos.as_uvec2()).is_some_and(|p| p == team) {
+                    break;
+                }
+                bwd_count += 1
             }
-            false
+            if fwd_count + bwd_count >= 3 {
+                if fwd_count >= bwd_count {
+                    Some(((updated_pos.as_ivec2() + dir * fwd_count).as_uvec2(), (updated_pos.as_ivec2() - dir * bwd_count).as_uvec2()))
+                } else {
+                    Some(((updated_pos.as_ivec2() - dir * bwd_count).as_uvec2(), (updated_pos.as_ivec2() + dir * fwd_count).as_uvec2()))
+                }
+            } else {
+                None
+            }
         };
 
-        DIRECTIONS.iter().find(|&&dir| check_dir(dir)).copied()
+        WIN_DIRECTIONS.iter().find_map(|&dir| check_dir(dir))
+    }
+
+    pub fn do_move(&mut self, board_move: Move) {
+        if self.valid_uvec_pos(board_move.pos) && self.get(board_move.pos).is_none() && board_move.pos.y == self.levels[board_move.pos.x as usize] {
+            self.set(board_move.pos, Some(board_move.player));
+            self.levels[board_move.pos.x as usize] += 1;
+        } else {
+            error!("Player {:?} Tried Invalid Move!", board_move.player);
+        }
+    }
+
+    pub fn undo_move(&mut self, board_move: Move) {
+        self.set(board_move.pos, None);
+        self.levels[board_move.pos.x as usize] -= 1;
+    }
+
+    pub fn is_draw(&self) -> bool {
+        !self.levels.iter().min().is_some_and(|n| n + 1 < self.size.y)
     }
 }

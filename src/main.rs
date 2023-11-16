@@ -1,7 +1,9 @@
+mod ai;
 mod components;
 
 use std::time::Duration;
 
+use ai::{Ai, AiPlugin};
 use bevy::{prelude::*, render::camera::ScalingMode, sprite::MaterialMesh2dBundle, window::PrimaryWindow};
 use bevy_tweening::{
     asset_animator_system, component_animator_system,
@@ -12,27 +14,26 @@ use components::*;
 
 const BACKGROUND_COLOR: Color = Color::rgb(1.0, 1.0, 1.0);
 const TILE_COLOR: Color = Color::rgb(1.0, 1.0, 1.0);
-const BOARD_COLOR: Color = Color::rgb(0.9, 0.9, 0.9);
+const BOARD_COLOR: Color = Color::rgb(0.85, 0.85, 0.85);
 const PLAYER1_COLOR: Color = Color::hsl(190.0, 0.9, 0.5);
 const PLAYER2_COLOR: Color = Color::hsl(340.0, 0.9, 0.5);
 const GOLD_COLOR: Color = Color::hsl(47.0, 0.9, 0.58);
-const DIRECTIONS: [IVec2; 8] = [
+const WIN_DIRECTIONS: [IVec2; 4] = [
     IVec2::new(1, 0),
     IVec2::new(1, 1),
     IVec2::new(0, 1),
     IVec2::new(-1, 1),
-    IVec2::new(-1, 0),
-    IVec2::new(-1, -1),
-    IVec2::new(0, -1),
-    IVec2::new(1, -1),
+    // IVec2::new(-1, 0),
+    // IVec2::new(-1, -1),
+    // IVec2::new(0, -1),
+    // IVec2::new(1, -1),
 ];
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(TweeningPlugin)
+        .add_plugins((DefaultPlugins, TweeningPlugin, AiPlugin))
         .insert_resource(ClearColor(BACKGROUND_COLOR))
-        .insert_resource(create_board_resource())
+        .insert_resource(Board::new())
         .add_systems(
             Update,
             (
@@ -48,21 +49,12 @@ fn main() {
         .init_resource::<WorldCoords>()
         .add_event::<EndTurnEvent>()
         .add_event::<WinEvent>()
+        .add_event::<RequestMoveEvent>()
         .run();
-}
-
-fn create_board_resource() -> Board {
-    let size = UVec2 { x: 7, y: 6 };
-    let board = Board {
-        size,
-        grid: vec![None; (size.x * size.y) as usize],
-    };
-    board
 }
 
 fn setup_camera(mut commands: Commands) {
     let mut cam = Camera2dBundle::default();
-    // cam.projection.scaling_mode = ScalingMode::FixedVertical(10f32);
     cam.projection.scaling_mode = ScalingMode::AutoMin { min_width: 8.0, min_height: 8.0 };
 
     commands.spawn((cam, MainCamera));
@@ -91,6 +83,8 @@ fn setup_board(mut commands: Commands, board: Res<Board>, mut meshes: ResMut<Ass
         sprite: Sprite { color: BOARD_COLOR, ..default() },
         ..default()
     },));
+    commands.spawn((Ai { player: Player::PlayerTwo },));
+    commands.spawn((Ai { player: Player::PlayerOne },));
     for y in 0..board.size.y {
         for x in 0..board.size.x {
             let pos = UVec2 { x, y };
@@ -182,17 +176,20 @@ fn do_move(
             debug!("Grid pos: {}/{}", grid_pos.x, grid_pos.y);
             debug!("End Turn Event sent");
 
-            let cur_player = match &game_state.0 {
+            if let Some(cur_player) = match &game_state.0 {
                 GameState::PlayerOneTurn => Some(Player::PlayerOne),
                 GameState::PlayerTwoTurn => Some(Player::PlayerTwo),
                 GameState::GameOver => None,
-            };
-
-            if board.get(grid_pos).is_none() && (grid_pos.y == 0 || board.get(grid_pos - UVec2::new(0, 1)).is_some()) {
-                board.set(grid_pos, cur_player);
-                ev_end_turn.send(EndTurnEvent(game_state.0, grid_pos));
-            } else {
-                info!("Can't place here");
+            } {
+                if board.get(grid_pos).is_none() && (grid_pos.y == 0 || board.get(grid_pos - UVec2::new(0, 1)).is_some()) {
+                    board.do_move(Move {
+                        pos: grid_pos,
+                        player: cur_player,
+                    });
+                    ev_end_turn.send(EndTurnEvent(game_state.0, grid_pos));
+                } else {
+                    info!("Can't place here");
+                }
             }
         }
     }
@@ -252,12 +249,18 @@ fn end_turn(
     mut game_state: ResMut<GameStateMachine>,
     board: Res<Board>,
     mut win_event_writer: EventWriter<WinEvent>,
+    mut request_move_event: EventWriter<RequestMoveEvent>,
     mut turn_indicator: Query<(&mut BackgroundColor, Option<&mut Animator<BackgroundColor>>, Entity)>,
 ) {
     for ev in ev_end_turn.read() {
         if ev.0 != game_state.0 {
             warn!("End turn from wrong Player!");
             continue;
+        }
+
+        if board.is_draw() {
+            info!("Draw!");
+            game_state.0 = GameState::GameOver;
         }
 
         let cur_player = match game_state.0 {
@@ -267,13 +270,14 @@ fn end_turn(
         };
 
         if let Some(p) = cur_player {
-            if let Some(dir) = board.check_for_win(p, ev.1) {
-                info!("Player {:?} has won", p);
+            info!("Check if {:?} has won", p);
+            if let Some((from_pos, to_pos)) = board.check_for_win(p, ev.1) {
+                info!("{:?} has won", p);
                 game_state.0 = GameState::GameOver;
                 win_event_writer.send(WinEvent {
                     winning_player: p,
-                    pos: ev.1,
-                    dir,
+                    from_pos,
+                    to_pos,
                 });
             } else {
                 debug!("No win");
@@ -308,13 +312,25 @@ fn end_turn(
         }
 
         info!("End Turn from {:?} at {}. New State: {:?}", ev.0, ev.1, game_state.0);
+
+        if let Some(next_player) = match game_state.0 {
+            GameState::PlayerOneTurn => Some(Player::PlayerOne),
+            GameState::PlayerTwoTurn => Some(Player::PlayerTwo),
+            GameState::GameOver => None,
+        } {
+            info!("Request move from {:?}", next_player);
+            request_move_event.send(RequestMoveEvent(next_player));
+        }
     }
 }
 
 fn spawn_win_line(mut commands: Commands, mut win_event: EventReader<WinEvent>, board: Res<Board>) {
     for ev in win_event.read() {
         info!("Win event! {:?}", ev);
-        let pos = ev.pos.as_vec2() + ev.dir.as_vec2() * 1.5;
+        let center_pos = (ev.from_pos.as_vec2() + ev.to_pos.as_vec2()) * 0.5;
+        let diff_vec = ev.from_pos.as_vec2() - ev.to_pos.as_vec2();
+
+        let start_scale = Vec3::new(0.0, 0.2, 1.0);
 
         let track = Tracks::<Transform>::new([
             Tween::new(
@@ -322,15 +338,15 @@ fn spawn_win_line(mut commands: Commands, mut win_event: EventReader<WinEvent>, 
                 Duration::from_secs_f32(1.0),
                 TransformScaleLens {
                     start: Vec3::new(0.0, 0.2, 1.0),
-                    end: Vec3::new(ev.dir.as_vec2().length() * 3.0, 0.2, 1.0),
+                    end: Vec3::new(diff_vec.length(), 0.2, 1.0),
                 },
             ),
             Tween::new(
                 EaseFunction::CubicInOut,
                 Duration::from_secs_f32(1.0),
                 TransformPositionLens {
-                    start: board.vec2_to_world(ev.pos.as_vec2() + ev.dir.as_vec2() * 3.0).extend(1.0),
-                    end: board.vec2_to_world(pos).extend(1.0),
+                    start: board.vec2_to_world(ev.from_pos.as_vec2()).extend(1.0),
+                    end: board.vec2_to_world(center_pos).extend(1.0),
                 },
             ),
         ]);
@@ -340,9 +356,9 @@ fn spawn_win_line(mut commands: Commands, mut win_event: EventReader<WinEvent>, 
             Animator::new(animation),
             SpriteBundle {
                 transform: Transform {
-                    translation: board.vec2_to_world(pos).extend(1.0),
-                    scale: Vec3::new(ev.dir.as_vec2().length() * 3.0, 0.0, 1.0),
-                    rotation: Quat::from_rotation_z(Vec2::angle_between(Vec2::new(1.0, 0.0), ev.dir.as_vec2())),
+                    translation: board.vec2_to_world(center_pos).extend(1.0),
+                    scale: start_scale,
+                    rotation: Quat::from_rotation_z(Vec2::angle_between(Vec2::new(1.0, 0.0), diff_vec)),
                 },
                 sprite: Sprite {
                     color: match ev.winning_player {
