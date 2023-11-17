@@ -253,6 +253,7 @@ fn end_turn(
     mut turn_indicator: Query<(&mut BackgroundColor, Option<&mut Animator<BackgroundColor>>, Entity)>,
 ) {
     for ev in ev_end_turn.read() {
+        info!("Player does {:?}!", ev.1);
         if ev.0 != game_state.0 {
             warn!("End turn from wrong Player!");
             continue;
